@@ -25,9 +25,12 @@ from typing import List, Optional, Tuple, Union
 from diffusers.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
 from diffusers.utils import deprecate
 
+import torch
+
+from transformers import AutoTokenizer, CLIPTextModelWithProjection
+
 import sys
 sys.path.append("..")
-
 
 class DDIMPipeline(DiffusionPipeline):
     r"""
@@ -308,6 +311,7 @@ class Trainer(object):
                  use_checkpoint="latest", # which ckpt to use at init time
                  use_tensorboardX=True, # whether to use tensorboard for logging
                  scheduler_update_every_step=False, # whether to call scheduler.step() after every train step
+                 text_w=None
                  ):
         
         self.argv = argv
@@ -519,6 +523,8 @@ class Trainer(object):
         
         self.buffer_imgs = None
         self.buffer_poses = None
+        
+        self.text_w = text_w
 
 
     def init_evalpose(self, loader):
@@ -581,6 +587,26 @@ class Trainer(object):
                 text_z = self.guidance.get_text_embeds([text], [negative_text])
                 self.text_z.append(text_z)
 
+    def get_text_embedding_1d(self):
+        if self.opt.text is None:
+            self.log(f"[WARN] text prompt is not provided.")
+            self.log(f"[WARN] using randomly initialized one.")
+            
+            text_emb = torch.randn(512)
+        
+        else:
+            model = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-base-patch32")
+            tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+
+            inputs = tokenizer([self.opt.text], padding=True, return_tensors="pt")
+            outputs = model(**inputs)
+            
+            text_emb = outputs.text_embeds.to(self.device)
+        
+        return text_emb
+
+            
+            
     def log(self, *args, **kwargs):
         if self.local_rank == 0:
             if not self.mute: 
@@ -650,7 +676,10 @@ class Trainer(object):
         if self.opt.backbone == "particle":
             self.model.mytraining = True
         binarize = False
-        outputs = self.model.render(rays_o, rays_d, mvp, H, W, staged=False, light_d= light_d,perturb=True, bg_color=bg_color, ambient_ratio=ambient_ratio, shading=shading, binarize=binarize)
+        
+        assert H == W, "H should be same as W"
+        # outputs = self.model.render(rays_o, rays_d, mvp, H, staged=False, light_d= light_d,perturb=True, bg_color=bg_color, ambient_ratio=ambient_ratio, shading=shading, binarize=binarize)
+        outputs = self.model.synthesis(self.text_w, rays_o, rays_d, H)
         if self.opt.backbone == "particle":
             self.model.mytraining = False
 
@@ -915,7 +944,9 @@ class Trainer(object):
                     self.save_checkpoint(full=False, best=False)
                     # self.save_checkpoint(full=False, best=True)
 
-            unet_bs = 8 if not self.opt.lora else 2
+            # unet_bs = 8 if not self.opt.lora else 2
+            
+            unet_bs = 1
 
             if (self.epoch % self.eval_interval == 0 or self.epoch == 1 or self.epoch < 2) and self.opt.K > 0:
                 pipeline = DDIMPipeline(unet=self.unet, scheduler=self.guidance.scheduler, v_pred = self.opt.v_pred)
@@ -1065,17 +1096,18 @@ class Trainer(object):
         self.local_step = 0
 
         for data in loader:
+            print('here?')
             self.model.set_idx()
             # update grid every 16 steps
-            if self.model.cuda_ray and self.global_step % self.opt.update_extra_interval == 0:
-                with torch.cuda.amp.autocast(enabled=self.fp16):
-                    self.model.update_extra_state()
+            # if self.model.cuda_ray and self.global_step % self.opt.update_extra_interval == 0:
+            #     with torch.cuda.amp.autocast(enabled=self.fp16):
+            #         self.model.update_extra_state()
                     
             self.local_step += 1
             self.global_step += 1
 
             self.optimizer.zero_grad()
-
+            
             with torch.cuda.amp.autocast(enabled=self.fp16):
                 pred_rgbs, pred_depths, loss, pseudo_loss, latents, shading = self.train_step(data)
 
