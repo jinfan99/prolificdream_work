@@ -1,20 +1,21 @@
 import torch
 import argparse
 import sys
+import pickle as pkl
 
 from nerf.provider import NeRFDataset
 from nerf.utils import *
 from nerf.network_particle import NeRFNetwork
 
-from transformers import AutoTokenizer, CLIPTextModelWithProjection
-
 import dnnlib
+
+IMAGE_RES = 256
 
 def init_dataset_kwargs(data):
     try:
         dataset_kwargs = dnnlib.EasyDict(class_name='training.dataset.ImageFolderDataset', path=data, use_labels=True, max_size=None, xflip=False)
         dataset_obj = None # Subclass of training.dataset.Dataset.
-        dataset_kwargs.resolution = 512 # Be explicit about resolution.
+        dataset_kwargs.resolution = IMAGE_RES # Be explicit about resolution.
         dataset_kwargs.use_labels = True # Be explicit about labels.
         dataset_kwargs.max_size = 99999999 # Be explicit about dataset size.
         return dataset_kwargs, 'place_holder'
@@ -192,22 +193,6 @@ def make_c(opt):
     # print('built c!')
     return c 
 
-def get_text_embedding_1d(device, text=None):
-    if text is None:
-        raise ValueError("no text input")
-    
-    else:
-        model = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-base-patch32")
-        tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
-
-        inputs = tokenizer([text], padding=True, return_tensors="pt")
-        outputs = model(**inputs)
-        
-        text_emb = outputs.text_embeds.to(device)
-    
-    del model
-    del tokenizer
-    return text_emb
 
 if __name__ == '__main__':
 
@@ -217,7 +202,7 @@ if __name__ == '__main__':
     parser.add_argument('-O', action='store_true', help="equals --fp16 --cuda_ray --dir_text")
     parser.add_argument('-O2', action='store_true', help="equals --backbone vanilla --dir_text")
     parser.add_argument('--test', action='store_true', help="test mode")
-    parser.add_argument('--eval_interval', type=int, default=10, help="evaluate on the valid set every interval epochs")
+    parser.add_argument('--eval_interval', type=int, default=5, help="evaluate on the valid set every interval epochs")
     parser.add_argument('--test_interval', type=int, default=50, help="evaluate on the test set every interval epochs")
     parser.add_argument('--workspace', type=str, default='exp/')
     parser.add_argument('--guidance', type=str, default='stable-diffusion', help='choose from [stable-diffusion, clip]')
@@ -410,6 +395,9 @@ if __name__ == '__main__':
     parser.add_argument('--density_reg_p_dist',    help='density regularization strength.', metavar='FLOAT', type=float, default=0.004, required=False )
     parser.add_argument('--reg_type', help='Type of regularization', metavar='STR',  choices=['l1', 'l1-alt', 'monotonic-detach', 'monotonic-fixed', 'total-variation'], required=False, default='l1')
     parser.add_argument('--decoder_lr_mul',    help='decoder learning rate multiplier.', metavar='FLOAT', type=float, default=1, required=False )
+    
+    parser.add_argument('--use-pretrained',    help='pretrianed model path', metavar='STR',  type=str, required=False, default=None)
+
     ############# EG3D #####################
 
     opt = parser.parse_args()
@@ -492,8 +480,16 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # model = NeRFNetwork(opt).to(device)
     
-    common_kwargs = dict(c_dim=10, img_resolution=512, img_channels=3)
+    common_kwargs = dict(c_dim=25, img_resolution=IMAGE_RES, img_channels=3)
     model = dnnlib.util.construct_class_by_name(**c.G_kwargs, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nn.Module
+    
+    if opt.use_pretrained is not None:
+        with open(opt.use_pretrained, 'rb') as f:
+            G = pkl.load(f)['G_ema'].train().to(device)
+            model.load_state_dict(G.state_dict(), strict=False)
+        
+        print('using pretrained model')
+            
     print('Built G!')
 
     if opt.dmtet and opt.init_ckpt != '':
@@ -533,7 +529,7 @@ if __name__ == '__main__':
             # Adan usually requires a larger LR
             optimizer = lambda model: Adan(model.get_params(5 * opt.lr), eps=1e-8, weight_decay=2e-5, max_grad_norm=5.0, foreach=False)
         else:
-            optimizer = lambda model: torch.optim.Adam(model.get_params(opt.lr, finetune = opt.finetune), betas=(0.9, 0.99), eps=1e-15)
+            # optimizer = lambda model: torch.optim.Adam(model.get_params(opt.lr, finetune = opt.finetune), betas=(0.9, 0.99), eps=1e-15)
             optimizer = lambda model: torch.optim.Adam(model.parameters(), lr=opt.lr, betas=(0.9, 0.99), eps=1e-15)
 
         scheduler = lambda optimizer: optim.lr_scheduler.LambdaLR(optimizer, lambda iter: 1)
@@ -547,15 +543,12 @@ if __name__ == '__main__':
         else:
             raise NotImplementedError(f'--guidance {opt.guidance} is not implemented.')
 
-        # text_w = get_text_embedding_1d(device, str(opt.text))
-        text_w = None
-        
-        trainer = Trainer(' '.join(sys.argv), 'df', opt, model, guidance, device=device, workspace=opt.workspace, optimizer=optimizer, ema_decay=None, fp16=opt.fp16, lr_scheduler=scheduler, use_checkpoint=opt.ckpt, eval_interval=opt.eval_interval, scheduler_update_every_step=True, text_w=text_w)
+        trainer = Trainer(' '.join(sys.argv), 'df', opt, model, guidance, device=device, workspace=opt.workspace, optimizer=optimizer, ema_decay=None, fp16=opt.fp16, lr_scheduler=scheduler, use_checkpoint=opt.ckpt, eval_interval=opt.eval_interval, scheduler_update_every_step=True)
         trainer.model.set_idx(opt.mesh_idx)
         trainer.test_loader = NeRFDataset(opt, device=device, type='test', H=opt.H, W=opt.W, size=100).dataloader()
         trainer.train_loader512 = NeRFDataset(opt, device=device, type='train', H=512, W=512, size=opt.per_iter).dataloader()
 
-        valid_loader = NeRFDataset(opt, device=device, type='val', H=opt.H, W=opt.W, size=opt.val_size).dataloader()
+        valid_loader = NeRFDataset(opt, device=device, type='val', H=opt.h, W=opt.w, size=opt.val_size).dataloader()
 
         max_epoch = np.ceil(opt.iters / len(train_loader)).astype(np.int32)
         trainer.train(train_loader, valid_loader, max_epoch)

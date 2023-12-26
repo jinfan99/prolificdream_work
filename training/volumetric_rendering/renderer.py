@@ -137,6 +137,7 @@ class ImportanceRenderer(torch.nn.Module):
             rgb_final, depth_final, weights = self.ray_marcher(colors_coarse, densities_coarse, depths_coarse, rendering_options)
 
 
+        print('rgb final: ', rgb_final.shape)
         return rgb_final, depth_final, weights.sum(2).squeeze(-1), weights.squeeze(-1)
 
     def run_model(self, planes, decoder, sample_coordinates, sample_directions, options):

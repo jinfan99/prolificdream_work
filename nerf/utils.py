@@ -9,6 +9,7 @@ import numpy as np
 import time
 
 import cv2
+import PIL
 
 import torch
 import torch.nn as nn
@@ -24,6 +25,7 @@ from typing import List, Optional, Tuple, Union
 
 from diffusers.pipeline_utils import DiffusionPipeline, ImagePipelineOutput
 from diffusers.utils import deprecate
+from camera_utils import LookAtPoseSampler, FOV_to_intrinsics
 
 import torch
 
@@ -335,6 +337,9 @@ class Trainer(object):
         self.scheduler_update_every_step = scheduler_update_every_step
         self.device = device if device is not None else torch.device(f'cuda:{local_rank}' if torch.cuda.is_available() else 'cpu')
         self.console = Console()
+        
+        for p in model.parameters():
+            p.requires_grad = True
     
         model.to(self.device)
         if self.world_size > 1:
@@ -586,27 +591,7 @@ class Trainer(object):
                 
                 text_z = self.guidance.get_text_embeds([text], [negative_text])
                 self.text_z.append(text_z)
-
-    def get_text_embedding_1d(self):
-        if self.opt.text is None:
-            self.log(f"[WARN] text prompt is not provided.")
-            self.log(f"[WARN] using randomly initialized one.")
-            
-            text_emb = torch.randn(512)
-        
-        else:
-            model = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-base-patch32")
-            tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
-
-            inputs = tokenizer([self.opt.text], padding=True, return_tensors="pt")
-            outputs = model(**inputs)
-            
-            text_emb = outputs.text_embeds.to(self.device)
-        
-        return text_emb
-
-            
-            
+                
     def log(self, *args, **kwargs):
         if self.local_rank == 0:
             if not self.mute: 
@@ -679,17 +664,20 @@ class Trainer(object):
         
         assert H == W, "H should be same as W"
         # outputs = self.model.render(rays_o, rays_d, mvp, H, staged=False, light_d= light_d,perturb=True, bg_color=bg_color, ambient_ratio=ambient_ratio, shading=shading, binarize=binarize)
-        outputs = self.model.synthesis(self.text_w, rays_o, rays_d, H)
+        # rays_o, rays_d = self.model.ray_sampler(data['pose'], data['intrinsic'], 256)
+        outputs = self.model.synthesis(self.text_w, rays_o, rays_d, H//2)
         if self.opt.backbone == "particle":
             self.model.mytraining = False
 
-        pred_depth = outputs['depth'].reshape(B, 1, H, W)
+        pred_depth = outputs['depth'].reshape(B, 1, H//2, W//2)
         
         if as_latent:
             pred_rgb = torch.cat([outputs['image'], outputs['weights_sum'].unsqueeze(-1)], dim=-1).reshape(B, H, W, 4).permute(0, 3, 1, 2).contiguous()
         else:
             pred_rgb = outputs['image'].reshape(B, H, W, 3 if not self.opt.latent else 4).permute(0, 3, 1, 2).contiguous() # [1, 3, H, W]
         
+        # print(pred_rgb)
+        torchvision.utils.save_image(pred_rgb, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "pred_rgb.png"), normalize=True, value_range=(0,1))
         # text embeddings
         if self.opt.dir_text:
             dirs = data['dir'] # [B,]
@@ -717,6 +705,7 @@ class Trainer(object):
 
         # encode pred_rgb to latents
         loss, pseudo_loss, latents = self.guidance.train_step(text_z, pred_rgb, self.opt.scale, q_unet, pose, shading = shading, as_latent=as_latent, t5=t5)
+
 
         # regularizations
         if not self.opt.dmtet:
@@ -790,15 +779,71 @@ class Trainer(object):
         else:
             raise NotImplementedError()
 
-        outputs = self.model.render(rays_o, rays_d, mvp, H, W, staged=True, perturb=False, bg_color=None, light_d=light_d, ambient_ratio=ambient_ratio, shading=shading)
+        # outputs = self.model.render(rays_o, rays_d, mvp, H, W, staged=True, perturb=False, bg_color=None, light_d=light_d, ambient_ratio=ambient_ratio, shading=shading)
+        ##################### EG3D TEST #######################
+        # cam2world_pose = LookAtPoseSampler.sample(3.14/2, 3.14/2, torch.tensor([0, 0, 0.2], device=self.device), radius=2.7, device=self.device)
+        # fov_deg = 18.837
+        # intrinsics = FOV_to_intrinsics(fov_deg, device=self.device)
+        # imgs = []
+        # angle_p = -0.2
+        # for angle_y, angle_p in [(.4, angle_p), (0, angle_p), (-.4, angle_p)]:
+        #     cam_pivot = torch.tensor(self.model.rendering_kwargs.get('avg_camera_pivot', [0, 0, 0]), device=self.device)
+        #     cam_radius = self.model.rendering_kwargs.get('avg_camera_radius', 2.7)
+        #     cam2world_pose = LookAtPoseSampler.sample(np.pi/2 + angle_y, np.pi/2 + angle_p, cam_pivot, radius=cam_radius, device=self.device)
+        #     conditioning_cam2world_pose = LookAtPoseSampler.sample(np.pi/2, np.pi/2, cam_pivot, radius=cam_radius, device=self.device)
+        #     camera_params = torch.cat([cam2world_pose.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
+        #     conditioning_params = torch.cat([conditioning_cam2world_pose.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
+
+        #     # ws = G.mapping(z, conditioning_params, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
+        #     # img = G.synthesis(ws, camera_params)['image']
+            
+        #     cam2world_matrix_eg3d = camera_params[:, :16].view(-1, 4, 4)
+        #     intrinsics_eg3d = camera_params[:, 16:25].view(-1, 3, 3)
+            
+            
+        #     cam2world_matrix_pd = torch.tensor(data['pose'], dtype=torch.float64).to(self.device)
+        #     intrinsics_pd = torch.tensor(data['intrinsic'], dtype=torch.float64).view(-1, 3, 3).to(self.device)
+            
+        #     print('cam2world_matrix_eg3d: ', cam2world_matrix_eg3d)
+        #     print('cam2world_matrix_pd: ', cam2world_matrix_pd)
+        #     print('intrinsics_eg3d: ', intrinsics_eg3d)
+        #     print('intrinsics_pd: ', intrinsics_pd)
+            
+        #     rays_o, rays_d = self.model.ray_sampler(cam2world_matrix_pd.to(cam2world_matrix_eg3d.dtype), intrinsics_pd.to(intrinsics_eg3d.dtype), 256)
+            
+        # outputs = self.model.synthesis(self.text_w, rays_o.to(torch.float32), rays_d.to(torch.float32), H)
+        #     img = outputs['image']
+            
+        #     img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+        #     imgs.append(img)
+        
+        # # outputs = self.model.synthesis(self.text_w, rays_o, rays_d, H)
+        
+        # print('image shape: ', outputs['image'].shape)
+        # img = (outputs['image'].permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+        
+        # img = torch.cat(imgs, dim=2)
+
+        # # PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}.png')
+
+        # PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:06d}' + "single_image" +".png"))
+        ##################### EG3D TEST #######################
+        
+        # rays_o, rays_d = self.model.ray_sampler(data['pose'], data['intrinsic'], 256)
+        outputs = self.model.synthesis(self.text_w, rays_o.to(torch.float32), rays_d.to(torch.float32), H//2)
+        # print('outputs: ', outputs['image'].shape)
         if not self.opt.latent:
-            pred_rgb = outputs['image'].reshape(B, H, W, 3)
+            # pred_rgb = outputs['image'].reshape(B, H, W, 3)
+            pred_rgb = outputs['image']#.permute(0, 3, 1, 2)
         else:
-            pred_rgb = outputs['image'].reshape(B, H, W, 4)
+            # pred_rgb = outputs['image'].reshape(B, H, W, 4)
+            pred_rgb = outputs['image']#.permute(0, 3, 1, 2)
             with torch.no_grad():
                 pred_rgb = self.guidance.decode_latents(pred_rgb.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-        pred_depth = outputs['depth'].reshape(B, H, W)
-
+        pred_depth = outputs['depth'].reshape(B, H//2, W//2)
+        
+        # print('eval step: ', pred_rgb.shape)
+        # torchvision.utils.save_image(pred_rgb.permute(0,3,1,2), os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:06d}' + "eval_steps" + ".png"), nrow=self.opt.val_size, normalize=True, value_range=(-1,1))
         # dummy 
         loss = torch.zeros([1], device=pred_rgb.device, dtype=pred_rgb.dtype)
 
@@ -837,15 +882,17 @@ class Trainer(object):
         else:
             raise NotImplementedError()
     
-        outputs = self.model.render(rays_o, rays_d, mvp, H, W, staged=True, perturb=perturb, light_d=light_d, ambient_ratio=ambient_ratio, shading=shading, bg_color=bg_color)
-
+        # outputs = self.model.render(rays_o, rays_d, mvp, H, W, staged=True, perturb=perturb, light_d=light_d, ambient_ratio=ambient_ratio, shading=shading, bg_color=bg_color)
+        # rays_o, rays_d = self.model.ray_sampler(data['pose'], data['intrinsic'], 256)
+        outputs = self.model.synthesis(self.text_w, rays_o.to(torch.float32), rays_d.to(torch.float32), H//2)
+       
         if not self.opt.latent:
             pred_rgb = outputs['image'].reshape(B, H, W, 3)
         else:
             pred_rgb = outputs['image'].reshape(B, H, W, 4)
             with torch.no_grad():
                 pred_rgb = self.guidance.decode_latents(pred_rgb.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-        pred_depth = outputs['depth'].reshape(B, H, W)
+        pred_depth = outputs['depth'].reshape(B, H//2, W//2)
         pred_mask = outputs['weights_sum'].reshape(B, H, W) > 0.95
 
         return pred_rgb, pred_depth, pred_mask
@@ -925,6 +972,9 @@ class Trainer(object):
                     print("Change into 512 resolution!")
                 train_loader = self.train_loader512
 
+            self.evaluate_one_epoch(valid_loader, shading = "normal")
+            
+            # break
             self.train_one_epoch(train_loader)
 
             if self.workspace is not None and self.local_rank == 0:
@@ -944,9 +994,7 @@ class Trainer(object):
                     self.save_checkpoint(full=False, best=False)
                     # self.save_checkpoint(full=False, best=True)
 
-            # unet_bs = 8 if not self.opt.lora else 2
-            
-            unet_bs = 1
+            unet_bs = 8 if not self.opt.lora else 2
 
             if (self.epoch % self.eval_interval == 0 or self.epoch == 1 or self.epoch < 2) and self.opt.K > 0:
                 pipeline = DDIMPipeline(unet=self.unet, scheduler=self.guidance.scheduler, v_pred = self.opt.v_pred)
@@ -955,7 +1003,7 @@ class Trainer(object):
                     rgb = self.guidance.decode_latents(images)
                 img = rgb.detach().permute(0,2,3,1).cpu().numpy()
                 img = torch.tensor(img.transpose(0,3,1,2), dtype=torch.float32)
-                torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-albedo.png"), normalize=True, range=(0,1))
+                torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-albedo.png"), normalize=True, value_range=(0,1))
                 
                 if not self.opt.albedo:
                     with torch.no_grad():
@@ -963,7 +1011,7 @@ class Trainer(object):
                         rgb = self.guidance.decode_latents(images)
                     img = rgb.detach().permute(0,2,3,1).cpu().numpy()
                     img = torch.tensor(img.transpose(0,3,1,2), dtype=torch.float32)
-                    torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-textureless.png"), normalize=True, range=(0,1))
+                    torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-textureless.png"), normalize=True, value_range=(0,1))
                     
                     if not self.opt.no_lambertian:
                         with torch.no_grad():
@@ -971,7 +1019,7 @@ class Trainer(object):
                             rgb = self.guidance.decode_latents(images)
                         img = rgb.detach().permute(0,2,3,1).cpu().numpy()
                         img = torch.tensor(img.transpose(0,3,1,2), dtype=torch.float32)
-                        torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-lambertian.png"), normalize=True, range=(0,1))
+                        torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-lambertian.png"), normalize=True, value_range=(0,1))
                             
                 # if self.opt.p_normal > 0:
                 with torch.no_grad():
@@ -979,7 +1027,7 @@ class Trainer(object):
                     rgb = self.guidance.decode_latents(images)
                 img = rgb.detach().permute(0,2,3,1).cpu().numpy()
                 img = torch.tensor(img.transpose(0,3,1,2), dtype=torch.float32)
-                torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-normal.png"), normalize=True, range=(0,1))
+                torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-normal.png"), normalize=True, value_range=(0,1))
                             
 
                 # poses = self.init_evalpose(valid_loader)
@@ -998,7 +1046,7 @@ class Trainer(object):
                         rgb = self.guidance.decode_latents(images)
                     img = rgb.detach().permute(0,2,3,1).cpu().numpy()
                     img = torch.tensor(img.transpose(0,3,1,2), dtype=torch.float32)
-                    torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-cond.png"), normalize=True, range=(0,1))
+                    torchvision.utils.save_image(img, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "-unet-cond.png"), normalize=True, value_range=(0,1))
 
             if self.epoch % self.opt.test_interval == 0:
                 self.save_checkpoint(full=False, best=True)
@@ -1096,7 +1144,6 @@ class Trainer(object):
         self.local_step = 0
 
         for data in loader:
-            print('here?')
             self.model.set_idx()
             # update grid every 16 steps
             # if self.model.cuda_ray and self.global_step % self.opt.update_extra_interval == 0:
@@ -1107,10 +1154,13 @@ class Trainer(object):
             self.global_step += 1
 
             self.optimizer.zero_grad()
-            
+
             with torch.cuda.amp.autocast(enabled=self.fp16):
                 pred_rgbs, pred_depths, loss, pseudo_loss, latents, shading = self.train_step(data)
 
+            # print('min: ', pred_rgbs.min())
+            # print('max: ', pred_rgbs.max())
+            
             self.scaler.scale(loss).backward()
             self.post_train_step()
             self.scaler.step(self.optimizer)
@@ -1254,7 +1304,13 @@ class Trainer(object):
                 if not (self.opt.backbone == 'particle'):
                     break
             if self.local_rank == 0:
-                torchvision.utils.save_image(pre_imgs.permute(0,3,1,2), os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:06d}' + "-rgb-"+shading+".png"), nrow=self.opt.val_size, normalize=True, range=(0,1))
+                # print('preds: ' ,preds.shape)
+                # print('pred img: ', pre_imgs.shape)
+                # print(preds.max())
+                # print(preds.min())
+                # torchvision.utils.save_image(preds.permute(0,3,1,2), os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:06d}' + "test_singlge" + ".png"), nrow=1, normalize=True, value_range=(-1,1))
+                torchvision.utils.save_image(pre_imgs.permute(0,3,1,2), os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:06d}' + "-rgb-"+shading+".png"), nrow=self.opt.val_size, normalize=True, value_range=(0,1))
+                # torchvision.utils.save_image(pre_imgs.permute(0, 2, 3, 1), os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:06d}' + "-rgb-"+shading+".png"), nrow=self.opt.val_size, normalize=True, value_range=(-1,1))
                 if shading == "albedo":
                     torchvision.utils.save_image(pre_depths.unsqueeze(1), os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:06d}' + "-depth.png"), nrow=self.opt.val_size, normalize=True)
 
@@ -1291,9 +1347,9 @@ class Trainer(object):
             'stats': self.stats,
         }
 
-        if self.model.cuda_ray:
-            # state['mean_count'] = self.model.mean_count
-            state['mean_density'] = self.model.mean_density
+        # if self.model.cuda_ray:
+        #     # state['mean_count'] = self.model.mean_count
+        #     state['mean_density'] = self.model.mean_density
 
         if self.opt.dmtet:
             state['tet_scale'] = self.model.tet_scale

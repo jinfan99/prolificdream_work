@@ -15,6 +15,8 @@ from training.volumetric_rendering.renderer import ImportanceRenderer
 from training.volumetric_rendering.ray_sampler import RaySampler
 import dnnlib
 from torch.autograd import Variable
+import os
+import torchvision 
 
 @persistence.persistent_class
 class TriPlaneGenerator(torch.nn.Module):
@@ -45,6 +47,8 @@ class TriPlaneGenerator(torch.nn.Module):
         self.rendering_kwargs = rendering_kwargs
     
         self._last_planes = None
+        
+        self.ws = None
     
     def mapping(self, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False):
         if self.rendering_kwargs['c_gen_conditioning_zero']:
@@ -57,9 +61,17 @@ class TriPlaneGenerator(torch.nn.Module):
         # if self.backbone.mapping.num_ws is not None:
         #         ws = ws.unsqueeze(1).repeat([1, self.backbone.mapping.num_ws, 1])
                 
-        ws  = torch.randn(1, 14, 512).cuda()
-        ws = Variable(ws, requires_grad=True)
-
+        if self.ws is None:
+            random_z = torch.randn(1, 512).cuda()
+            random_c = torch.zeros(1, 25).cuda()
+            ws = self.mapping(random_z, random_c)
+            # ws  = torch.randn(1, 14, 512).cuda()
+            self.ws = Variable(ws, requires_grad=True)
+        if self.ws.grad is not None:
+            self.ws.grad.zero_()
+        
+        # print('neural_rendering_resolution?: ', neural_rendering_resolution)
+        # print('self.neural_rendering_resolution?: ', self.neural_rendering_resolution)
         if neural_rendering_resolution is None:
             neural_rendering_resolution = self.neural_rendering_resolution
         else:
@@ -73,7 +85,7 @@ class TriPlaneGenerator(torch.nn.Module):
         if use_cached_backbone and self._last_planes is not None:
             planes = self._last_planes
         else:
-            planes = self.backbone.synthesis(ws, update_emas=update_emas, **synthesis_kwargs)
+            planes = self.backbone.synthesis(self.ws, update_emas=update_emas, **synthesis_kwargs)
         if cache_backbone:
             self._last_planes = planes
 
@@ -89,9 +101,16 @@ class TriPlaneGenerator(torch.nn.Module):
         depth_image = depth_samples.permute(0, 2, 1).reshape(N, 1, H, W)
 
         # Run superresolution to get final image
-        rgb_image = feature_image[:, :3]
-        sr_image = self.superresolution(rgb_image, feature_image, ws, noise_mode=self.rendering_kwargs['superresolution_noise_mode'], **{k:synthesis_kwargs[k] for k in synthesis_kwargs.keys() if k != 'noise_mode'})
-
+        rgb_image_rawout = feature_image[:, :3]
+        rgb_image = feature_image[:, :3].permute(0, 2, 3, 1)
+        
+        # print('rgb_image: ', rgb_image.shape)
+        # print('feature_image: ', rgb_image.shape)
+        # torchvision.utils.save_image(rgb_image, "tri_rgb_1" + ".png", nrow=1, normalize=True, value_range=(-1,1))
+        # torchvision.utils.save_image(rgb_image.permute(0,3,1,2), "tri_rgb_2" + ".png", nrow=1, normalize=True, value_range=(-1,1))
+        sr_image = self.superresolution(rgb_image_rawout, feature_image, self.ws, noise_mode=self.rendering_kwargs['superresolution_noise_mode'], **{k:synthesis_kwargs[k] for k in synthesis_kwargs.keys() if k != 'noise_mode'})
+        sr_image = sr_image.permute(0, 2, 3, 1)
+        
         return {'image': sr_image, 'image_raw': rgb_image, 'depth': depth_image, 'weights_sum': weights_samples_sum, 'weights': weights_samples}
     
     def sample(self, coordinates, directions, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False, **synthesis_kwargs):
@@ -112,12 +131,6 @@ class TriPlaneGenerator(torch.nn.Module):
         ws = self.mapping(z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
         return self.synthesis(ws, c, update_emas=update_emas, neural_rendering_resolution=neural_rendering_resolution, cache_backbone=cache_backbone, use_cached_backbone=use_cached_backbone, **synthesis_kwargs)
 
-    # def set_idx(self):
-    #     pass
-    
-    # def init_tet(self):
-    #     pass
-    
     def set_idx(self, idx=None):
         # if idx == None:
         #     self.idx = random.randint(0, self.n_particles-1)

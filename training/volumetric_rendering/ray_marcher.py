@@ -42,6 +42,8 @@ class MipRayMarcher2(nn.Module):
         weights = alpha * torch.cumprod(alpha_shifted, -2)[:, :, :-1]
 
         composite_rgb = torch.sum(weights * colors_mid, -2)
+        
+        # print('composite_rgb: ', composite_rgb.shape)
         weight_total = weights.sum(2)
         composite_depth = torch.sum(weights * depths_mid, -2) / weight_total
 
@@ -52,7 +54,7 @@ class MipRayMarcher2(nn.Module):
         if rendering_options.get('white_back', False):
             composite_rgb = composite_rgb + 1 - weight_total
 
-        composite_rgb = composite_rgb * 2 - 1 # Scale to (-1, 1)
+        # composite_rgb = composite_rgb * 2 - 1 # Scale to (-1, 1)
 
         return composite_rgb, composite_depth, weights
 

@@ -7,9 +7,6 @@ import random
 import numpy as np
 from scipy.spatial.transform import Slerp, Rotation
 import math
-from camera_utils import create_cam2world_matrix, FOV_to_intrinsics
-from training.volumetric_rendering import math_utils
-
 
 import trimesh
 
@@ -18,6 +15,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from .utils import get_rays, safe_normalize
+from training.volumetric_rendering import math_utils
+from camera_utils import create_cam2world_matrix
 
 DIR_COLORS = np.array([
     [255, 0, 0, 255], # front
@@ -88,60 +87,7 @@ def rand_poses(size, device, radius_range=[1, 1.5], theta_range=[0, 120], phi_ra
     Return:
         poses: [size, 4, 4]
     '''
-    def get_eg3d():
-        theta_range = np.deg2rad(theta_range)
-        phi_range = np.deg2rad(phi_range)
-        angle_overhead = np.deg2rad(angle_overhead)
-        angle_front = np.deg2rad(angle_front)
-        
-        radius = torch.rand(size, device=device) * (radius_range[1] - radius_range[0]) + radius_range[0]
 
-        if random.random() < uniform_sphere_rate:
-            unit_centers = F.normalize(
-                torch.stack([
-                    (torch.rand(size, device=device) - 0.5) * 2.0,
-                    torch.rand(size, device=device),
-                    (torch.rand(size, device=device) - 0.5) * 2.0,
-                ], dim=-1), p=2, dim=1
-            )
-            thetas = torch.acos(unit_centers[:,1])
-            phis = torch.atan2(unit_centers[:,0], unit_centers[:,2])
-            phis[phis < 0] += 2 * np.pi
-            # centers = unit_centers * radius.unsqueeze(-1)
-        else:
-            thetas = torch.rand(size, device=device) * (theta_range[1] - theta_range[0]) + theta_range[0]
-            phis = torch.rand(size, device=device) * (phi_range[1] - phi_range[0]) + phi_range[0]
-
-            # centers = torch.stack([
-            #     radius * torch.sin(thetas) * torch.sin(phis),
-            #     radius * torch.cos(thetas),
-            #     radius * torch.sin(thetas) * torch.cos(phis),
-            # ], dim=-1) # [B, 3]
-        
-        camera_origins = torch.zeros((size, 3), device=device)
-
-        camera_origins[:, 0:1] = radius*torch.sin(phis) * torch.cos(math.pi-thetas)
-        camera_origins[:, 2:3] = radius*torch.sin(phis) * torch.sin(math.pi-thetas)
-        camera_origins[:, 1:2] = radius*torch.cos(phis)
-
-        lookat_position = torch.tensor([0, 0, 0]).to(device)
-        # forward_vectors = math_utils.normalize_vecs(-camera_origins)
-        
-
-        # jitters
-        if jitter:
-            camera_origins = camera_origins + (torch.rand_like(camera_origins) * 0.2 - 0.1)
-            lookat_position = lookat_position + torch.randn_like(camera_origins) * 0.2
-            
-        forward_vectors = math_utils.normalize_vecs(lookat_position - camera_origins)
-        
-        poses = create_cam2world_matrix(forward_vectors, camera_origins)
-
-        if return_dirs:
-            dirs = get_view_direction(thetas, phis, angle_overhead, angle_front)
-        else:
-            dirs = None
-            
     theta_range = np.deg2rad(theta_range)
     phi_range = np.deg2rad(phi_range)
     angle_overhead = np.deg2rad(angle_overhead)
@@ -203,34 +149,12 @@ def rand_poses(size, device, radius_range=[1, 1.5], theta_range=[0, 120], phi_ra
 
 
 def circle_poses(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_overhead=30, angle_front=60):
-    def get_eg3d():
-        theta = np.deg2rad(theta)
-        phi = np.deg2rad(phi)
-        angle_overhead = np.deg2rad(angle_overhead)
-        angle_front = np.deg2rad(angle_front)
 
-        thetas = torch.FloatTensor([theta]).to(device)
-        phis = torch.FloatTensor([phi]).to(device)
-
-        camera_origins = torch.zeros((1, 3), device=device)
-
-        camera_origins[:, 0:1] = radius*torch.sin(phis) * torch.cos(math.pi-thetas)
-        camera_origins[:, 2:3] = radius*torch.sin(phis) * torch.sin(math.pi-thetas)
-        camera_origins[:, 1:2] = radius*torch.cos(phis)
-
-        lookat_position = torch.tensor([0, 0, 0]).to(device)
-        # forward_vectors = math_utils.normalize_vecs(-camera_origins)
-        forward_vectors = math_utils.normalize_vecs(lookat_position - camera_origins)
-        
-        poses = create_cam2world_matrix(forward_vectors, camera_origins)
-
-        if return_dirs:
-            dirs = get_view_direction(thetas, phis, angle_overhead, angle_front)
-        else:
-            dirs = None
-    
     theta = np.deg2rad(theta)
     phi = np.deg2rad(phi)
+    if phi == 0:
+        phi = math.pi / 4
+    # phi = 1.57
     angle_overhead = np.deg2rad(angle_overhead)
     angle_front = np.deg2rad(angle_front)
 
@@ -245,6 +169,7 @@ def circle_poses(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_
 
     # lookat
     forward_vector = safe_normalize(centers)
+    
     up_vector = torch.FloatTensor([0, 1, 0]).to(device).unsqueeze(0)
     right_vector = safe_normalize(torch.cross(forward_vector, up_vector, dim=-1))
     up_vector = safe_normalize(torch.cross(right_vector, forward_vector, dim=-1))
@@ -252,11 +177,37 @@ def circle_poses(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_
     poses = torch.eye(4, dtype=torch.float, device=device).unsqueeze(0)
     poses[:, :3, :3] = torch.stack((right_vector, up_vector, forward_vector), dim=-1)
     poses[:, :3, 3] = centers
+    
+    print('thetas: ', thetas)
+    print('phis: ', phis)
+    
+    camera_origins = torch.zeros((1, 3), device=device)
+
+    camera_origins[:, 0:1] = radius*torch.sin(phis) * torch.cos(math.pi-thetas)
+    camera_origins[:, 2:3] = radius*torch.sin(phis) * torch.sin(math.pi-thetas)
+    camera_origins[:, 1:2] = radius*torch.cos(phis)
+
+    forward_vectors = math_utils.normalize_vecs(-camera_origins)
+    # forward_vectors = math_utils.normalize_vecs(lookat_position - camera_origins)
+    poses = create_cam2world_matrix(forward_vectors, camera_origins)
 
     if return_dirs:
         dirs = get_view_direction(thetas, phis, angle_overhead, angle_front)
     else:
         dirs = None
+        
+        
+    #### EG3D Style ######
+    # rotation_matrix = torch.eye(4, dtype=torch.float, device=device).unsqueeze(0)
+    # rotation_matrix[:, :3, :3] = torch.stack((right_vector, up_vector, forward_vector), dim=-1)
+    
+    # translation_matrix = torch.eye(4, dtype=torch.float, device=device).unsqueeze(0)
+    # rotation_matrix[:, :3, 3] = centers
+    
+    # poses = (translation_matrix @ rotation_matrix)[:, :, :]
+    # # poses = torch.randn_like(poses)
+    # print('using new pose')
+    #### EG3D Style ######
     return poses, dirs    
     
 
@@ -287,70 +238,6 @@ class NeRFDataset:
 
     def collate(self, index):
 
-        def get_eg3d():
-            ############## EG3D Style ####################
-            B = len(index) # always 1
-            
-            # print('index: ', index)
-            # print(1)
-
-            if self.training:
-                # random pose on the fly
-                poses, dirs = rand_poses(B, self.device, radius_range=self.opt.radius_range, theta_range=self.opt.theta_range, return_dirs=self.opt.dir_text, angle_overhead=self.opt.angle_overhead, angle_front=self.opt.angle_front, jitter=self.opt.jitter_pose, uniform_sphere_rate=self.opt.uniform_sphere_rate)
-
-                # random focal
-                fov = random.random() * (self.opt.fovy_range[1] - self.opt.fovy_range[0]) + self.opt.fovy_range[0]
-                fov_deg = 18.837
-            else:
-                # circle pose
-                phi = ((index[0] + 1) / self.size) * 90
-                #poses, dirs = circle_poses(self.device, radius=self.opt.radius_range[1] * 1.2, theta=self.opt.val_theta, phi=phi, return_dirs=self.opt.dir_text, angle_overhead=self.opt.angle_overhead, angle_front=self.opt.angle_front)
-                poses, dirs = circle_poses(self.device, radius=self.opt.val_radius, theta=self.opt.val_theta, phi=phi, return_dirs=self.opt.dir_text, angle_overhead=self.opt.angle_overhead, angle_front=self.opt.angle_front)
-
-                # fixed focal
-                fov = (self.opt.fovy_range[1] + self.opt.fovy_range[0]) / 2
-                fov_deg = 18.837
-
-            focal = self.H / (2 * np.tan(np.deg2rad(fov) / 2))
-            intrinsics = np.array([focal, focal, self.cx, self.cy])
-
-            # intrinsic_mat = np.array([[focal/intrinsic_scale, 0, self.cx/intrinsic_scale],
-            #                           [0, focal/intrinsic_scale, self.cy/intrinsic_scale],
-            #                           [0, 0, 1]
-            #                           ])
-            
-            # intrinsic_mat = torch.tensor([[[4.2634, 0.0000, 0.5000],
-            #                             [0.0000, 4.2634, 0.5000],
-            #                             [0.0000, 0.0000, 1.0000]]]).to(self.device)
-            
-            intrinsic_mat = FOV_to_intrinsics(fov_deg, device=self.device)
-            # print()
-            
-            projection = torch.tensor([
-                [2*focal/self.W, 0, 0, 0], 
-                [0, -2*focal/self.H, 0, 0],
-                [0, 0, -(self.far+self.near)/(self.far-self.near), -(2*self.far*self.near)/(self.far-self.near)],
-                [0, 0, -1, 0]
-            ], dtype=torch.float32, device=self.device).unsqueeze(0)
-
-            mvp = projection @ torch.inverse(poses) # [1, 4, 4]
-            
-            # sample a low-resolution but full image
-            rays = get_rays(poses, intrinsics, self.H, self.W, -1)
-
-            data = {
-                'H': self.H,
-                'W': self.W,
-                'rays_o': rays['rays_o'],
-                'rays_d': rays['rays_d'],
-                'dir': dirs,
-                'pose': poses,
-                'mvp': mvp,
-                'intrinsic': intrinsic_mat
-            }
-            # print(self.H, rays['rays_o'].shape)
-            ############## EG3D Style ####################
-
         B = len(index) # always 1
 
         if self.training:
@@ -359,23 +246,31 @@ class NeRFDataset:
 
             # random focal
             fov = random.random() * (self.opt.fovy_range[1] - self.opt.fovy_range[0]) + self.opt.fovy_range[0]
+            fov = 18.837
         else:
             # circle pose
-            phi = ((index[0] + 1) / self.size) * 90
+            # phi = (index[0] / self.size) * 360
+            phi = (index[0] / self.size) * 180
+            # phi = torch.pi / 2
             #poses, dirs = circle_poses(self.device, radius=self.opt.radius_range[1] * 1.2, theta=self.opt.val_theta, phi=phi, return_dirs=self.opt.dir_text, angle_overhead=self.opt.angle_overhead, angle_front=self.opt.angle_front)
             poses, dirs = circle_poses(self.device, radius=self.opt.val_radius, theta=self.opt.val_theta, phi=phi, return_dirs=self.opt.dir_text, angle_overhead=self.opt.angle_overhead, angle_front=self.opt.angle_front)
 
             # fixed focal
             fov = (self.opt.fovy_range[1] + self.opt.fovy_range[0]) / 2
+            # print('raw fov: ', fov)
+            fov = 18.837
+            
+        # print('radius: ', self.opt.val_radius)
 
         focal = self.H / (2 * np.tan(np.deg2rad(fov) / 2))
         intrinsics = np.array([focal, focal, self.cx, self.cy])
-
-        intrinsic_mat = np.array([[focal, 0, self.cx],
-                                  [0, focal, self.cy],
+        
+        intrinsic_scale = 100
+        intrinsic_mat = np.array([[focal/intrinsic_scale, 0, self.cx/intrinsic_scale],
+                                  [0, focal/intrinsic_scale, self.cy/intrinsic_scale],
                                   [0, 0, 1]
                                   ])
-        
+
         projection = torch.tensor([
             [2*focal/self.W, 0, 0, 0], 
             [0, -2*focal/self.H, 0, 0],
@@ -383,11 +278,11 @@ class NeRFDataset:
             [0, 0, -1, 0]
         ], dtype=torch.float32, device=self.device).unsqueeze(0)
 
+        print(poses)
         mvp = projection @ torch.inverse(poses) # [1, 4, 4]
         
         # sample a low-resolution but full image
-        # rays = get_rays(poses, intrinsics, self.H, self.W, -1)
-        rays = get_rays(poses, intrinsics, self.H//2, self.W//2, -1)
+        rays = get_rays(poses, intrinsics, self.H, self.W, -1)
 
         data = {
             'H': self.H,
@@ -400,7 +295,6 @@ class NeRFDataset:
             'intrinsic': intrinsic_mat
         }
         # print(self.H, rays['rays_o'].shape)
-        ############## EG3D Style ####################
         return data
 
 
