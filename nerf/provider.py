@@ -88,7 +88,7 @@ def rand_poses(size, device, radius_range=[1, 1.5], theta_range=[0, 120], phi_ra
     Return:
         poses: [size, 4, 4]
     '''
-    def get_eg3d():
+    def get_eg3d(size, device, radius_range, theta_range, phi_range, return_dirs, angle_overhead, angle_front, jitter, uniform_sphere_rate):
         theta_range = np.deg2rad(theta_range)
         phi_range = np.deg2rad(phi_range)
         angle_overhead = np.deg2rad(angle_overhead)
@@ -141,6 +141,8 @@ def rand_poses(size, device, radius_range=[1, 1.5], theta_range=[0, 120], phi_ra
             dirs = get_view_direction(thetas, phis, angle_overhead, angle_front)
         else:
             dirs = None
+            
+        return poses, dirs
             
     theta_range = np.deg2rad(theta_range)
     phi_range = np.deg2rad(phi_range)
@@ -199,11 +201,12 @@ def rand_poses(size, device, radius_range=[1, 1.5], theta_range=[0, 120], phi_ra
     else:
         dirs = None
     
+    # poses, dirs = get_eg3d(size, device, radius_range, theta_range, phi_range, return_dirs, angle_overhead, angle_front, jitter, uniform_sphere_rate)
     return poses, dirs
 
 
 def circle_poses(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_overhead=30, angle_front=60):
-    def get_eg3d():
+    def get_eg3d(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_overhead=30, angle_front=60):
         theta = np.deg2rad(theta)
         phi = np.deg2rad(phi)
         angle_overhead = np.deg2rad(angle_overhead)
@@ -223,11 +226,12 @@ def circle_poses(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_
         forward_vectors = math_utils.normalize_vecs(lookat_position - camera_origins)
         
         poses = create_cam2world_matrix(forward_vectors, camera_origins)
+        
+        # print('pose: ', poses)
 
-        if return_dirs:
-            dirs = get_view_direction(thetas, phis, angle_overhead, angle_front)
-        else:
-            dirs = None
+        return poses
+    
+
     
     theta = np.deg2rad(theta)
     phi = np.deg2rad(phi)
@@ -257,6 +261,18 @@ def circle_poses(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_
         dirs = get_view_direction(thetas, phis, angle_overhead, angle_front)
     else:
         dirs = None
+    
+    # dirs = None
+    # theta = 45
+    # phi = 90
+    # theta += .1
+    # phi += .1
+    
+    # print('3d theta: ', theta)
+    # print('3d phi: ', phi)
+    
+    
+    # poses = get_eg3d(device, radius, theta, phi, return_dirs, angle_overhead, angle_front)
     return poses, dirs    
     
 
@@ -303,10 +319,14 @@ class NeRFDataset:
                 fov_deg = 18.837
             else:
                 # circle pose
-                phi = ((index[0] + 1) / self.size) * 90
+                phi = (index[0] / self.size) * 360
+                # phi = (1 / self.size) * 180
+                # print('index: ', index[0]+1)
+                # print('size: ', self.size)
                 #poses, dirs = circle_poses(self.device, radius=self.opt.radius_range[1] * 1.2, theta=self.opt.val_theta, phi=phi, return_dirs=self.opt.dir_text, angle_overhead=self.opt.angle_overhead, angle_front=self.opt.angle_front)
                 poses, dirs = circle_poses(self.device, radius=self.opt.val_radius, theta=self.opt.val_theta, phi=phi, return_dirs=self.opt.dir_text, angle_overhead=self.opt.angle_overhead, angle_front=self.opt.angle_front)
-
+                # print('theta: ', self.opt.val_theta)
+                # print()
                 # fixed focal
                 fov = (self.opt.fovy_range[1] + self.opt.fovy_range[0]) / 2
                 fov_deg = 18.837
@@ -323,7 +343,7 @@ class NeRFDataset:
             #                             [0.0000, 4.2634, 0.5000],
             #                             [0.0000, 0.0000, 1.0000]]]).to(self.device)
             
-            intrinsic_mat = FOV_to_intrinsics(fov_deg, device=self.device)
+            intrinsic_mat = FOV_to_intrinsics(fov, device=self.device)
             # print()
             
             projection = torch.tensor([
@@ -333,7 +353,8 @@ class NeRFDataset:
                 [0, 0, -1, 0]
             ], dtype=torch.float32, device=self.device).unsqueeze(0)
 
-            mvp = projection @ torch.inverse(poses) # [1, 4, 4]
+            # mvp = projection @ torch.inverse(poses) # [1, 4, 4]
+            mvp = None
             
             # sample a low-resolution but full image
             rays = get_rays(poses, intrinsics, self.H, self.W, -1)
@@ -348,6 +369,8 @@ class NeRFDataset:
                 'mvp': mvp,
                 'intrinsic': intrinsic_mat
             }
+            
+            return data
             # print(self.H, rays['rays_o'].shape)
             ############## EG3D Style ####################
 
@@ -371,10 +394,10 @@ class NeRFDataset:
         focal = self.H / (2 * np.tan(np.deg2rad(fov) / 2))
         intrinsics = np.array([focal, focal, self.cx, self.cy])
 
-        intrinsic_mat = np.array([[focal, 0, self.cx],
+        intrinsic_mat = torch.tensor([[focal, 0, self.cx],
                                   [0, focal, self.cy],
                                   [0, 0, 1]
-                                  ])
+                                  ]).to(self.device)
         
         projection = torch.tensor([
             [2*focal/self.W, 0, 0, 0], 
@@ -386,8 +409,8 @@ class NeRFDataset:
         mvp = projection @ torch.inverse(poses) # [1, 4, 4]
         
         # sample a low-resolution but full image
-        # rays = get_rays(poses, intrinsics, self.H, self.W, -1)
-        rays = get_rays(poses, intrinsics, self.H//2, self.W//2, -1)
+        rays = get_rays(poses, intrinsics, self.H, self.W, -1)
+        # rays = get_rays(poses, intrinsics, self.H//2, self.W//2, -1)
 
         data = {
             'H': self.H,
@@ -401,6 +424,7 @@ class NeRFDataset:
         }
         # print(self.H, rays['rays_o'].shape)
         ############## EG3D Style ####################
+        data = get_eg3d()
         return data
 
 

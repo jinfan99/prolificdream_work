@@ -34,6 +34,7 @@ from transformers import AutoTokenizer, CLIPTextModelWithProjection
 import sys
 sys.path.append("..")
 
+
 class DDIMPipeline(DiffusionPipeline):
     r"""
     This model inherits from [`DiffusionPipeline`]. Check the superclass documentation for the generic methods the
@@ -591,7 +592,7 @@ class Trainer(object):
                 
                 text_z = self.guidance.get_text_embeds([text], [negative_text])
                 self.text_z.append(text_z)
-                
+
     def log(self, *args, **kwargs):
         if self.local_rank == 0:
             if not self.mute: 
@@ -664,12 +665,12 @@ class Trainer(object):
         
         assert H == W, "H should be same as W"
         # outputs = self.model.render(rays_o, rays_d, mvp, H, staged=False, light_d= light_d,perturb=True, bg_color=bg_color, ambient_ratio=ambient_ratio, shading=shading, binarize=binarize)
-        # rays_o, rays_d = self.model.ray_sampler(data['pose'], data['intrinsic'], 256)
-        outputs = self.model.synthesis(self.text_w, rays_o, rays_d, H//2)
+        rays_o, rays_d = self.model.ray_sampler(data['pose'], data['intrinsic'], 256)
+        outputs = self.model.synthesis(self.text_w, rays_o, rays_d, H)
         if self.opt.backbone == "particle":
             self.model.mytraining = False
 
-        pred_depth = outputs['depth'].reshape(B, 1, H//2, W//2)
+        pred_depth = outputs['depth'].reshape(B, 1, H, W)
         
         if as_latent:
             pred_rgb = torch.cat([outputs['image'], outputs['weights_sum'].unsqueeze(-1)], dim=-1).reshape(B, H, W, 4).permute(0, 3, 1, 2).contiguous()
@@ -705,7 +706,6 @@ class Trainer(object):
 
         # encode pred_rgb to latents
         loss, pseudo_loss, latents = self.guidance.train_step(text_z, pred_rgb, self.opt.scale, q_unet, pose, shading = shading, as_latent=as_latent, t5=t5)
-
 
         # regularizations
         if not self.opt.dmtet:
@@ -829,8 +829,8 @@ class Trainer(object):
         # PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:06d}' + "single_image" +".png"))
         ##################### EG3D TEST #######################
         
-        # rays_o, rays_d = self.model.ray_sampler(data['pose'], data['intrinsic'], 256)
-        outputs = self.model.synthesis(self.text_w, rays_o.to(torch.float32), rays_d.to(torch.float32), H//2)
+        rays_o, rays_d = self.model.ray_sampler(data['pose'], data['intrinsic'], 256)
+        outputs = self.model.synthesis(self.text_w, rays_o.to(torch.float32), rays_d.to(torch.float32), H)
         # print('outputs: ', outputs['image'].shape)
         if not self.opt.latent:
             # pred_rgb = outputs['image'].reshape(B, H, W, 3)
@@ -840,7 +840,7 @@ class Trainer(object):
             pred_rgb = outputs['image']#.permute(0, 3, 1, 2)
             with torch.no_grad():
                 pred_rgb = self.guidance.decode_latents(pred_rgb.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-        pred_depth = outputs['depth'].reshape(B, H//2, W//2)
+        pred_depth = outputs['depth'].reshape(B, H, W)
         
         # print('eval step: ', pred_rgb.shape)
         # torchvision.utils.save_image(pred_rgb.permute(0,3,1,2), os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:06d}' + "eval_steps" + ".png"), nrow=self.opt.val_size, normalize=True, value_range=(-1,1))
@@ -883,16 +883,16 @@ class Trainer(object):
             raise NotImplementedError()
     
         # outputs = self.model.render(rays_o, rays_d, mvp, H, W, staged=True, perturb=perturb, light_d=light_d, ambient_ratio=ambient_ratio, shading=shading, bg_color=bg_color)
-        # rays_o, rays_d = self.model.ray_sampler(data['pose'], data['intrinsic'], 256)
-        outputs = self.model.synthesis(self.text_w, rays_o.to(torch.float32), rays_d.to(torch.float32), H//2)
-       
+        rays_o, rays_d = self.model.ray_sampler(data['pose'], data['intrinsic'], 256)
+        outputs = self.model.synthesis(self.text_w, rays_o.to(torch.float32), rays_d.to(torch.float32), H)
+
         if not self.opt.latent:
             pred_rgb = outputs['image'].reshape(B, H, W, 3)
         else:
             pred_rgb = outputs['image'].reshape(B, H, W, 4)
             with torch.no_grad():
                 pred_rgb = self.guidance.decode_latents(pred_rgb.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-        pred_depth = outputs['depth'].reshape(B, H//2, W//2)
+        pred_depth = outputs['depth'].reshape(B, H, W)
         pred_mask = outputs['weights_sum'].reshape(B, H, W) > 0.95
 
         return pred_rgb, pred_depth, pred_mask
@@ -972,7 +972,7 @@ class Trainer(object):
                     print("Change into 512 resolution!")
                 train_loader = self.train_loader512
 
-            self.evaluate_one_epoch(valid_loader, shading = "normal")
+            self.evaluate_one_epoch(valid_loader, shading = "albedo")
             
             # break
             self.train_one_epoch(train_loader)

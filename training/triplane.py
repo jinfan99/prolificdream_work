@@ -41,8 +41,8 @@ class TriPlaneGenerator(torch.nn.Module):
         self.renderer = ImportanceRenderer()
         self.ray_sampler = RaySampler()
         self.backbone = StyleGAN2Backbone(z_dim, c_dim, w_dim, img_resolution=256, img_channels=32*3, mapping_kwargs=mapping_kwargs, **synthesis_kwargs)
-        self.superresolution = dnnlib.util.construct_class_by_name(class_name=rendering_kwargs['superresolution_module'], channels=32, img_resolution=img_resolution, sr_num_fp16_res=sr_num_fp16_res, sr_antialias=rendering_kwargs['sr_antialias'], **sr_kwargs)
-        self.decoder = OSGDecoder(32, {'decoder_lr_mul': rendering_kwargs.get('decoder_lr_mul', 1), 'decoder_output_dim': 32})
+        # self.superresolution = dnnlib.util.construct_class_by_name(class_name=rendering_kwargs['superresolution_module'], channels=32, img_resolution=img_resolution, sr_num_fp16_res=sr_num_fp16_res, sr_antialias=rendering_kwargs['sr_antialias'], **sr_kwargs)
+        self.decoder_new = OSGDecoder(32, {'decoder_lr_mul': rendering_kwargs.get('decoder_lr_mul', 1), 'decoder_output_dim': 3})
         self.neural_rendering_resolution = 64
         self.rendering_kwargs = rendering_kwargs
     
@@ -93,7 +93,7 @@ class TriPlaneGenerator(torch.nn.Module):
         planes = planes.view(len(planes), 3, 32, planes.shape[-2], planes.shape[-1])
 
         # Perform volume rendering
-        feature_samples, depth_samples, weights_samples_sum, weights_samples = self.renderer(planes, self.decoder, ray_origins, ray_directions, self.rendering_kwargs) # channels last
+        feature_samples, depth_samples, weights_samples_sum, weights_samples = self.renderer(planes, self.decoder_new, ray_origins, ray_directions, self.rendering_kwargs) # channels last
 
         # Reshape into 'raw' neural-rendered image
         H = W = self.neural_rendering_resolution
@@ -108,23 +108,23 @@ class TriPlaneGenerator(torch.nn.Module):
         # print('feature_image: ', rgb_image.shape)
         # torchvision.utils.save_image(rgb_image, "tri_rgb_1" + ".png", nrow=1, normalize=True, value_range=(-1,1))
         # torchvision.utils.save_image(rgb_image.permute(0,3,1,2), "tri_rgb_2" + ".png", nrow=1, normalize=True, value_range=(-1,1))
-        sr_image = self.superresolution(rgb_image_rawout, feature_image, self.ws, noise_mode=self.rendering_kwargs['superresolution_noise_mode'], **{k:synthesis_kwargs[k] for k in synthesis_kwargs.keys() if k != 'noise_mode'})
-        sr_image = sr_image.permute(0, 2, 3, 1)
+        # sr_image = self.superresolution(rgb_image_rawout, feature_image, self.ws, noise_mode=self.rendering_kwargs['superresolution_noise_mode'], **{k:synthesis_kwargs[k] for k in synthesis_kwargs.keys() if k != 'noise_mode'})
+        # sr_image = sr_image.permute(0, 2, 3, 1)
         
-        return {'image': sr_image, 'image_raw': rgb_image, 'depth': depth_image, 'weights_sum': weights_samples_sum, 'weights': weights_samples}
+        return {'image': rgb_image, 'image_raw': rgb_image, 'depth': depth_image, 'weights_sum': weights_samples_sum, 'weights': weights_samples}
     
     def sample(self, coordinates, directions, z, c, truncation_psi=1, truncation_cutoff=None, update_emas=False, **synthesis_kwargs):
         # Compute RGB features, density for arbitrary 3D coordinates. Mostly used for extracting shapes. 
         ws = self.mapping(z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff, update_emas=update_emas)
         planes = self.backbone.synthesis(ws, update_emas=update_emas, **synthesis_kwargs)
         planes = planes.view(len(planes), 3, 32, planes.shape[-2], planes.shape[-1])
-        return self.renderer.run_model(planes, self.decoder, coordinates, directions, self.rendering_kwargs)
+        return self.renderer.run_model(planes, self.decoder_new, coordinates, directions, self.rendering_kwargs)
 
     def sample_mixed(self, coordinates, directions, ws, truncation_psi=1, truncation_cutoff=None, update_emas=False, **synthesis_kwargs):
         # Same as sample, but expects latent vectors 'ws' instead of Gaussian noise 'z'
         planes = self.backbone.synthesis(ws, update_emas = update_emas, **synthesis_kwargs)
         planes = planes.view(len(planes), 3, 32, planes.shape[-2], planes.shape[-1])
-        return self.renderer.run_model(planes, self.decoder, coordinates, directions, self.rendering_kwargs)
+        return self.renderer.run_model(planes, self.decoder_new, coordinates, directions, self.rendering_kwargs)
 
     def forward(self, z, c, truncation_psi=1, truncation_cutoff=None, neural_rendering_resolution=None, update_emas=False, cache_backbone=False, use_cached_backbone=False, **synthesis_kwargs):
         # Render a batch of generated images.
@@ -164,4 +164,7 @@ class OSGDecoder(torch.nn.Module):
         x = x.view(N, M, -1)
         rgb = torch.sigmoid(x[..., 1:])*(1 + 2*0.001) - 0.001 # Uses sigmoid clamping from MipNeRF
         sigma = x[..., 0:1]
+        
+        # print('rgb: ', rgb.shape)
+        # print('sigma: ', sigma.shape)
         return {'rgb': rgb, 'sigma': sigma}

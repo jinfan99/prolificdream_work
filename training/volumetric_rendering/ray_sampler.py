@@ -32,6 +32,7 @@ class RaySampler(torch.nn.Module):
         ray_origins: (N, M, 3)
         ray_dirs: (N, M, 2)
         """
+        print(intrinsics)
         N, M = cam2world_matrix.shape[0], resolution**2
         cam_locs_world = cam2world_matrix[:, :3, 3]
         fx = intrinsics[:, 0, 0]
