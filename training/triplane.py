@@ -42,7 +42,7 @@ class TriPlaneGenerator(torch.nn.Module):
         self.ray_sampler = RaySampler()
         self.backbone = StyleGAN2Backbone(z_dim, c_dim, w_dim, img_resolution=256, img_channels=32*3, mapping_kwargs=mapping_kwargs, **synthesis_kwargs)
         # self.superresolution = dnnlib.util.construct_class_by_name(class_name=rendering_kwargs['superresolution_module'], channels=32, img_resolution=img_resolution, sr_num_fp16_res=sr_num_fp16_res, sr_antialias=rendering_kwargs['sr_antialias'], **sr_kwargs)
-        # self.decoder_new = OSGDecoder(32, {'decoder_lr_mul': rendering_kwargs.get('decoder_lr_mul', 1), 'decoder_output_dim': 3})
+        # self.decdoder_new = OSGDecoder(32, {'decoder_lr_mul': rendering_kwargs.get('decoder_lr_mul', 1), 'decoder_output_dim': 3})
         self.decoder = OSGDecoder(32, {'decoder_lr_mul': rendering_kwargs.get('decoder_lr_mul', 1), 'decoder_output_dim': 32})
         self.neural_rendering_resolution = 64
         self.rendering_kwargs = rendering_kwargs
@@ -153,11 +153,11 @@ class OSGDecoder(torch.nn.Module):
             FullyConnectedLayer(self.hidden_dim, 1 + options['decoder_output_dim'], lr_multiplier=options['decoder_lr_mul'])
         )
         
-    def forward(self, sampled_features, ray_directions):
+    def forward(self, sampled_features, sample_coordinates):
         # Aggregate features
         sampled_features = sampled_features.mean(1)
         x = sampled_features
-
+        # print('triplane.py: sample_coordinates', sample_coordinates.shape)
         N, M, C = x.shape
         x = x.view(N*M, C)
 
@@ -166,6 +166,29 @@ class OSGDecoder(torch.nn.Module):
         rgb = torch.sigmoid(x[..., 1:])*(1 + 2*0.001) - 0.001 # Uses sigmoid clamping from MipNeRF
         sigma = x[..., 0:1]
         
+        # print('tri.py density_blob output: ', self.density_blob(sample_coordinates).shape)
+        sigma += self.density_blob(sample_coordinates).T
         # print('rgb: ', rgb.shape)
         # print('sigma: ', sigma.shape)
         return {'rgb': rgb, 'sigma': sigma}
+    
+    @torch.no_grad()
+    def density_blob(self, x):
+        # x: [B, N, 3]
+        
+        d = (x ** 2).sum(-1)
+        
+        blob_density = 10
+        blob_radius = 0.2
+        upper_clip_m = -100
+        
+        g = blob_density * (1 - torch.sqrt(d) / blob_radius)
+
+        if upper_clip_m > -10:
+            mask2 = torch.clamp(torch.sign(x[..., 1] - upper_clip_m), min = 0)
+            mask1 = torch.clamp(torch.sign(g), min = 0)
+            mask = 1 - mask2 * mask1
+        else:
+            mask = 1.0
+
+        return g * mask

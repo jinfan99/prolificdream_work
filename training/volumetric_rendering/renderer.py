@@ -157,7 +157,7 @@ class ImportanceRenderer(torch.nn.Module):
     def run_model(self, planes, decoder, sample_coordinates, sample_directions, options):
         sampled_features = sample_from_planes(self.plane_axes, planes, sample_coordinates, padding_mode='zeros', box_warp=options['box_warp'])
 
-        out = decoder(sampled_features, sample_directions)
+        out = decoder(sampled_features, sample_coordinates)
         if options.get('density_noise', 0) > 0:
             out['sigma'] += torch.randn_like(out['sigma']) * options['density_noise']
         return out
