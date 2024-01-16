@@ -735,6 +735,137 @@ class Trainer(object):
 
         return pred_rgb, pred_depth, loss, pseudo_loss, latents, shading
     
+    def train_step_sds(self, data):
+
+        rays_o = data['rays_o'] # [B, N, 3]
+        rays_d = data['rays_d'] # [B, N, 3]
+        mvp = data['mvp'] # [B, 4, 4]
+
+        B, N = rays_o.shape[:2]
+        H, W = data['H'], data['W']
+
+        if self.global_step < self.opt.albedo_iters+1:
+            shading = 'albedo'
+            ambient_ratio = 1.0
+        else: 
+            rand = random.random()
+            if rand > 0.8: 
+                shading = 'albedo'
+                ambient_ratio = 1.0
+            elif rand > 0.4 and (not self.opt.no_textureless): 
+                shading = 'textureless'
+                ambient_ratio = 0.1
+            else: 
+                if not self.opt.no_lambertian:
+                    shading = 'lambertian'
+                    ambient_ratio = 0.1
+                else:
+                    shading = 'albedo'
+                    ambient_ratio = 1.0                    
+
+        # if random.random() < self.opt.p_normal:
+        #     shading = 'normal'
+        #     ambient_ratio = 1.0
+        # 
+        light_d = None
+        if self.opt.normal:
+            shading = 'normal'
+            ambient_ratio = 1.0     
+            if self.opt.p_textureless > random.random():
+                shading = 'textureless'
+                ambient_ratio = 0.1             
+                light_d = data['rays_o'].contiguous().view(-1, 3)[0] + 0.3 * torch.randn(3, device=rays_o.device, dtype=torch.float)
+                light_d = safe_normalize(light_d)             
+        if self.global_step < self.opt.normal_iters+1:
+            as_latent = True
+            shading = 'normal'
+            ambient_ratio = 1.0                   
+        else:
+            as_latent = False
+
+        bg_color = None
+        if self.global_step > 2000:
+            if random.random() > 0.5:
+                bg_color = None # use bg_net
+            else:
+                bg_color = torch.rand(3).to(self.device) # single color random bg
+        
+        if self.opt.backbone == "particle":
+            self.model.mytraining = True
+        binarize = False
+        
+        assert H == W, "H should be same as W"
+        # outputs = self.model.render(rays_o, rays_d, mvp, H, staged=False, light_d= light_d,perturb=True, bg_color=bg_color, ambient_ratio=ambient_ratio, shading=shading, binarize=binarize)
+        rays_o, rays_d = self.model.ray_sampler(data['pose'], data['intrinsic'], 256)
+        outputs = self.model.synthesis(self.text_w, rays_o, rays_d, H)
+        if self.opt.backbone == "particle":
+            self.model.mytraining = False
+
+        pred_depth = outputs['depth'].reshape(B, 1, H, W)
+        
+        if as_latent:
+            pred_rgb = torch.cat([outputs['image'], outputs['weights_sum'].unsqueeze(-1)], dim=-1).reshape(B, H, W, 4).permute(0, 3, 1, 2).contiguous()
+        else:
+            pred_rgb = outputs['image'].reshape(B, H, W, 3 if not self.opt.latent else 4).permute(0, 3, 1, 2).contiguous() # [1, 3, H, W]
+        
+        # print(pred_rgb)
+        torchvision.utils.save_image(pred_rgb, os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:04d}' + "pred_rgb.png"), normalize=True, value_range=(0,1))
+        # text embeddings
+        if self.opt.dir_text:
+            dirs = data['dir'] # [B,]
+            text_z = self.text_z[dirs]
+        else:
+            text_z = self.text_z
+        
+
+        q_unet = self.unet
+        if self.opt.q_cond:
+            pose = data['pose'].view(B, 16)
+        else:
+            pose = None
+
+
+        grad_clip = None
+        if self.opt.dynamic_clip:
+            grad_clip = 2 + 6 * min(1, self.epoch/(100.0*self.opt.n_particles))
+
+        t5 = False
+        if self.opt.t5_iters != -1 and self.global_step >= self.opt.t5_iters:
+            if self.global_step == self.opt.t5_iters:
+                print("Change into tmax = 500 setting")
+            t5 = True
+
+        # encode pred_rgb to latents
+        loss, pseudo_loss, latents = self.guidance.train_step(text_z, pred_rgb, self.opt.scale, q_unet, pose, shading = shading, as_latent=as_latent, t5=t5)
+
+        # regularizations
+        if not self.opt.dmtet:
+            if self.opt.lambda_opacity > 0:
+                loss_opacity = (outputs['weights_sum'] ** 2).mean()
+                loss = loss + self.opt.lambda_opacity * loss_opacity
+
+            if self.opt.lambda_entropy > 0:
+
+                alphas = outputs['weights'].clamp(1e-5, 1 - 1e-5)
+                # alphas = alphas ** 2 # skewed entropy, favors 0 over 1
+                loss_entropy = (- alphas * torch.log2(alphas) - (1 - alphas) * torch.log2(1 - alphas)).mean()
+
+                # lambda_entropy = self.opt.lambda_entropy * min(1, 2 * self.global_step / self.opt.iters)
+
+                loss = loss + self.opt.lambda_entropy * loss_entropy
+
+            if self.opt.lambda_orient > 0 and 'loss_orient' in outputs:
+                loss_orient = outputs['loss_orient']
+                loss = loss + self.opt.lambda_orient * loss_orient
+        else:
+            if self.opt.lambda_normal > 0:
+                loss = loss + self.opt.lambda_normal * outputs['normal_loss']
+
+            if self.opt.lambda_lap > 0:
+                loss = loss + self.opt.lambda_lap * outputs['lap_loss']
+
+        return pred_rgb, pred_depth, loss, pseudo_loss, latents, shading
+    
     def post_train_step(self):
 
         if self.opt.backbone == 'grid':
@@ -1134,6 +1265,121 @@ class Trainer(object):
         self.log(f"==> Finished Test.")
     
     def train_one_epoch(self, loader):
+        self.log(f"==> Start Training {self.workspace} Epoch {self.epoch}, lr={self.optimizer.param_groups[0]['lr']:.6f} ...")
+
+        total_loss = 0
+        if self.local_rank == 0 and self.report_metric_at_train:
+            for metric in self.metrics:
+                metric.clear()
+
+        self.model.train()
+
+        # distributedSampler: must call set_epoch() to shuffle indices across multiple epochs
+        # ref: https://pytorch.org/docs/stable/data.html
+        if self.world_size > 1:
+            loader.sampler.set_epoch(self.epoch)
+        
+        if self.local_rank == 0:
+            pbar = tqdm.tqdm(total=len(loader) * loader.batch_size, bar_format='{desc}: {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+
+        self.local_step = 0
+
+        for data in loader:
+            self.model.set_idx()
+            # update grid every 16 steps
+            # if self.model.cuda_ray and self.global_step % self.opt.update_extra_interval == 0:
+            #     with torch.cuda.amp.autocast(enabled=self.fp16):
+            #         self.model.update_extra_state()
+                    
+            self.local_step += 1
+            self.global_step += 1
+
+            self.optimizer.zero_grad()
+
+            with torch.cuda.amp.autocast(enabled=self.fp16):
+                pred_rgbs, pred_depths, loss, pseudo_loss, latents, shading = self.train_step(data)
+
+            # print('min: ', pred_rgbs.min())
+            # print('max: ', pred_rgbs.max())
+            
+            self.scaler.scale(loss).backward()
+            self.post_train_step()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+
+            if self.scheduler_update_every_step:
+                self.lr_scheduler.step()
+
+            loss_val = loss.item()
+            total_loss += loss_val
+
+            if self.opt.buffer_size != -1:
+                self.add_buffer(latents, data['pose'])
+
+
+            assert self.opt.q_cond
+            if self.global_step % self.opt.K2 == 0 and not self.opt.sds:
+                for _ in range(self.opt.K):
+                    self.unet_optimizer.zero_grad()
+                    timesteps = torch.randint(0, 1000, (self.opt.unet_bs,), device=self.device).long() # temperarily hard-coded for simplicity
+                    with torch.no_grad():
+                        if self.buffer_imgs is None or self.buffer_imgs.shape[0]<self.opt.buffer_size:
+                            latents_clean = latents.expand(self.opt.unet_bs, latents.shape[1], latents.shape[2], latents.shape[3]).contiguous()
+                            if self.opt.q_cond:
+                                pose = data['pose']
+                                pose = pose.view(pose.shape[0], 16)
+                                pose = pose.expand(self.opt.unet_bs, 16).contiguous()
+                                if random.random() < self.opt.uncond_p:
+                                    pose = torch.zeros_like(pose)
+                        else:
+                            latents_clean, pose = self.sample_buffer(self.opt.unet_bs)
+                            if random.random() < self.opt.uncond_p:
+                                pose = torch.zeros_like(pose)
+                    noise = torch.randn(latents_clean.shape, device=self.device)
+                    latents_noisy = self.guidance.scheduler.add_noise(latents_clean, noise, timesteps)
+                    if self.opt.q_cond:
+                        model_output = self.unet(latents_noisy, timesteps, c = pose, shading = shading).sample
+                    else:
+                        model_output = self.unet(latents_noisy, timesteps).sample
+                    if self.opt.v_pred:
+                        loss_unet = F.mse_loss(model_output, self.guidance.scheduler.get_velocity(latents_clean, noise, timesteps))
+                    else:
+                        loss_unet = F.mse_loss(model_output, noise)
+                    loss_unet.backward()
+                    self.unet_optimizer.step()
+                    if self.scheduler_update_every_step:
+                        self.unet_scheduler.step()                    
+
+            if self.scheduler_update_every_step:
+                pbar.set_description(f"loss={loss_val:.4f} ({total_loss/self.local_step:.4f}), lr={self.optimizer.param_groups[0]['lr']:.6f}")
+            else:
+                pbar.set_description(f"loss={loss_val:.4f} ({total_loss/self.local_step:.4f})")
+            pbar.update(loader.batch_size)
+
+        if self.ema is not None:
+            self.ema.update()
+
+        average_loss = total_loss / self.local_step
+        self.stats["loss"].append(average_loss)
+
+        if self.local_rank == 0:
+            pbar.close()
+            if self.report_metric_at_train:
+                for metric in self.metrics:
+                    self.log(metric.report(), style="red")
+                    if self.use_tensorboardX:
+                        metric.write(self.writer, self.epoch, prefix="train")
+                    metric.clear()
+
+        if not self.scheduler_update_every_step:
+            if isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                self.lr_scheduler.step(average_loss)
+            else:
+                self.lr_scheduler.step()
+
+        self.log(f"==> Finished Epoch {self.epoch}.")
+
+    def train_one_epoch_sds(self, loader):
         self.log(f"==> Start Training {self.workspace} Epoch {self.epoch}, lr={self.optimizer.param_groups[0]['lr']:.6f} ...")
 
         total_loss = 0
