@@ -253,7 +253,7 @@ if __name__ == '__main__':
     parser.add_argument('--bound', type=float, default=1, help="assume the scene is bounded in box(-bound, bound)")
     parser.add_argument('--dt_gamma', type=float, default=0, help="dt_gamma (>=0) for adaptive ray marching. set to 0 to disable, >0 to accelerate rendering (but usually with worse quality)")
     parser.add_argument('--min_near', type=float, default=0.1, help="minimum near distance for camera")
-    parser.add_argument('--radius_range', type=float, nargs='*', default=[1.5, 2.0], help="training camera radius range")
+    parser.add_argument('--radius_range', type=float, nargs='*', default=[2.69, 2.71], help="training camera radius range")
     parser.add_argument('--val_radius', type=float, default=1.8, help="valid camera radius")
     parser.add_argument('--fovy_range', type=float, nargs='*', default=[40, 70], help="training camera fovy range")
     parser.add_argument('--dir_text', action='store_true', default=True, help="direction-encode the text prompt, by appending front/side/back/overhead view")

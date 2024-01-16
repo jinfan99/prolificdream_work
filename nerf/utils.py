@@ -765,7 +765,7 @@ class Trainer(object):
             ambient_ratio = 1.0
             light_d = None
         elif shading == "lambertian":
-            ambient_ratio = 0.1
+            ambient_ratio = 0.12
             light_d = data['rays_o'].contiguous().view(-1, 3)[0]
             light_d = safe_normalize(light_d)
         elif shading == "textureless":

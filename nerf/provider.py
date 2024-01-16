@@ -10,7 +10,6 @@ import math
 from camera_utils import create_cam2world_matrix, FOV_to_intrinsics
 from training.volumetric_rendering import math_utils
 
-
 import trimesh
 
 import torch
