@@ -780,7 +780,7 @@ class Trainer(object):
             raise NotImplementedError()
 
         # outputs = self.model.render(rays_o, rays_d, mvp, H, W, staged=True, perturb=False, bg_color=None, light_d=light_d, ambient_ratio=ambient_ratio, shading=shading)
-        ##################### EG3D TEST #######################
+        # #################### EG3D TEST #######################
         # cam2world_pose = LookAtPoseSampler.sample(3.14/2, 3.14/2, torch.tensor([0, 0, 0.2], device=self.device), radius=2.7, device=self.device)
         # fov_deg = 18.837
         # intrinsics = FOV_to_intrinsics(fov_deg, device=self.device)
@@ -789,6 +789,8 @@ class Trainer(object):
         # for angle_y, angle_p in [(.4, angle_p), (0, angle_p), (-.4, angle_p)]:
         #     cam_pivot = torch.tensor(self.model.rendering_kwargs.get('avg_camera_pivot', [0, 0, 0]), device=self.device)
         #     cam_radius = self.model.rendering_kwargs.get('avg_camera_radius', 2.7)
+        #     # print(angle_y)
+        #     # print('h, v:' , np.pi/2 + angle_y, np.pi/2 + angle_p, cam_pivot, cam_radius)
         #     cam2world_pose = LookAtPoseSampler.sample(np.pi/2 + angle_y, np.pi/2 + angle_p, cam_pivot, radius=cam_radius, device=self.device)
         #     conditioning_cam2world_pose = LookAtPoseSampler.sample(np.pi/2, np.pi/2, cam_pivot, radius=cam_radius, device=self.device)
         #     camera_params = torch.cat([cam2world_pose.reshape(-1, 16), intrinsics.reshape(-1, 9)], 1)
@@ -804,32 +806,40 @@ class Trainer(object):
         #     cam2world_matrix_pd = torch.tensor(data['pose'], dtype=torch.float64).to(self.device)
         #     intrinsics_pd = torch.tensor(data['intrinsic'], dtype=torch.float64).view(-1, 3, 3).to(self.device)
             
-        #     print('cam2world_matrix_eg3d: ', cam2world_matrix_eg3d)
-        #     print('cam2world_matrix_pd: ', cam2world_matrix_pd)
-        #     print('intrinsics_eg3d: ', intrinsics_eg3d)
-        #     print('intrinsics_pd: ', intrinsics_pd)
+        #     # print('cam2world_matrix_eg3d: ', cam2world_matrix_eg3d)
+        #     # print('cam2world_matrix_pd: ', cam2world_matrix_pd)
+        #     # print('intrinsics_eg3d: ', intrinsics_eg3d)
+        #     # print('intrinsics_pd: ', intrinsics_pd)
             
         #     rays_o, rays_d = self.model.ray_sampler(cam2world_matrix_pd.to(cam2world_matrix_eg3d.dtype), intrinsics_pd.to(intrinsics_eg3d.dtype), 256)
             
-        # outputs = self.model.synthesis(self.text_w, rays_o.to(torch.float32), rays_d.to(torch.float32), H)
+        #     outputs = self.model.synthesis(self.text_w, rays_o.to(torch.float32), rays_d.to(torch.float32), H)
         #     img = outputs['image']
             
-        #     img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+        #     # print('img max:' , img.max())
+        #     # print('img min:' , img.min())
+            
+        #     # img = (img * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+        #     img = (img * 255).clamp(0, 255).to(torch.uint8)
+        #     # print('image shape: ', img.shape)
+        #     # print('img max:' , img.max())
+        #     # print('img min:' , img.min())
         #     imgs.append(img)
         
         # # outputs = self.model.synthesis(self.text_w, rays_o, rays_d, H)
         
-        # print('image shape: ', outputs['image'].shape)
-        # img = (outputs['image'].permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
+        
+        # # img = (outputs['image'].permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
         
         # img = torch.cat(imgs, dim=2)
 
         # # PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}.png')
 
         # PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(os.path.join(self.workspace, 'validation', f'{self.name}_ep{self.epoch:06d}' + "single_image" +".png"))
-        ##################### EG3D TEST #######################
+        # #################### EG3D TEST #######################
         
         rays_o, rays_d = self.model.ray_sampler(data['pose'], data['intrinsic'], 256)
+        # print('pose: ', data['pose'])
         outputs = self.model.synthesis(self.text_w, rays_o.to(torch.float32), rays_d.to(torch.float32), H)
         # print('outputs: ', outputs['image'].shape)
         if not self.opt.latent:

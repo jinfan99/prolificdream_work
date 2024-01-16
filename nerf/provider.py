@@ -87,6 +87,7 @@ def rand_poses(size, device, radius_range=[1, 1.5], theta_range=[0, 120], phi_ra
     Return:
         poses: [size, 4, 4]
     '''
+    '''
     def get_eg3d(size, device, radius_range, theta_range, phi_range, return_dirs, angle_overhead, angle_front, jitter, uniform_sphere_rate):
         theta_range = np.deg2rad(theta_range)
         phi_range = np.deg2rad(phi_range)
@@ -142,7 +143,36 @@ def rand_poses(size, device, radius_range=[1, 1.5], theta_range=[0, 120], phi_ra
             dirs = None
             
         return poses, dirs
-            
+    '''
+    def get_eg3d(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_overhead=30, angle_front=60):
+        # print('radius: ', radius)
+        # theta = torch.deg2rad(theta)
+        # phi = torch.deg2rad(phi)
+        
+        # print('theta: ', theta)
+        # print('phi: ', phi)
+        
+        thetas = theta
+        phis = phi
+
+        camera_origins = torch.zeros((1, 3), device=device)
+
+        camera_origins[:, 0:1] = radius*torch.sin(phis) * torch.cos(math.pi-thetas)
+        # camera_origins[:, 0:1] = radius*torch.sin(phis) * torch.cos(thetas)
+        camera_origins[:, 2:3] = radius*torch.sin(phis) * torch.sin(math.pi-thetas)
+        # camera_origins[:, 2:3] = radius*torch.sin(phis) * torch.sin(thetas)
+        camera_origins[:, 1:2] = radius*torch.cos(phis)
+
+        lookat_position = torch.tensor([0, 0, 0.2]).to(device)
+        # forward_vectors = math_utils.normalize_vecs(-camera_origins)
+        forward_vectors = math_utils.normalize_vecs(lookat_position - camera_origins)
+        
+        poses = create_cam2world_matrix(forward_vectors, camera_origins)
+        
+        # print('pose: ', poses)
+
+        return poses
+    
     theta_range = np.deg2rad(theta_range)
     phi_range = np.deg2rad(phi_range)
     angle_overhead = np.deg2rad(angle_overhead)
@@ -172,6 +202,7 @@ def rand_poses(size, device, radius_range=[1, 1.5], theta_range=[0, 120], phi_ra
             radius * torch.sin(thetas) * torch.cos(phis),
         ], dim=-1) # [B, 3]
 
+    poses_eg3d = get_eg3d(device, radius, thetas, phis, return_dirs, angle_overhead, angle_front)
     targets = 0
 
     # jitters
@@ -201,15 +232,26 @@ def rand_poses(size, device, radius_range=[1, 1.5], theta_range=[0, 120], phi_ra
         dirs = None
     
     # poses, dirs = get_eg3d(size, device, radius_range, theta_range, phi_range, return_dirs, angle_overhead, angle_front, jitter, uniform_sphere_rate)
-    return poses, dirs
+    return poses_eg3d, dirs
 
 
 def circle_poses(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_overhead=30, angle_front=60):
     def get_eg3d(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_overhead=30, angle_front=60):
+        # print('radius: ', radius)
         theta = np.deg2rad(theta)
         phi = np.deg2rad(phi)
-        angle_overhead = np.deg2rad(angle_overhead)
-        angle_front = np.deg2rad(angle_front)
+        
+        # print('theta: ', theta)
+        # print('phi: ', phi)
+        
+        # theta = np.pi / 2
+        # theta = 1.570796
+        # v = 1.370796
+        # # v = np.pi/2 - 0.2
+        # v = torch.tensor(v / math.pi)
+        # phi = torch.arccos(1 - 2*v)
+        # angle_overhead = np.deg2rad(angle_overhead)
+        # angle_front = np.deg2rad(angle_front)
 
         thetas = torch.FloatTensor([theta]).to(device)
         phis = torch.FloatTensor([phi]).to(device)
@@ -217,10 +259,12 @@ def circle_poses(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_
         camera_origins = torch.zeros((1, 3), device=device)
 
         camera_origins[:, 0:1] = radius*torch.sin(phis) * torch.cos(math.pi-thetas)
+        # camera_origins[:, 0:1] = radius*torch.sin(phis) * torch.cos(thetas)
         camera_origins[:, 2:3] = radius*torch.sin(phis) * torch.sin(math.pi-thetas)
+        # camera_origins[:, 2:3] = radius*torch.sin(phis) * torch.sin(thetas)
         camera_origins[:, 1:2] = radius*torch.cos(phis)
 
-        lookat_position = torch.tensor([0, 0, 0]).to(device)
+        lookat_position = torch.tensor([0, 0, 0.2]).to(device)
         # forward_vectors = math_utils.normalize_vecs(-camera_origins)
         forward_vectors = math_utils.normalize_vecs(lookat_position - camera_origins)
         
@@ -230,7 +274,7 @@ def circle_poses(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_
 
         return poses
     
-
+    poses_eg3d = get_eg3d(device, radius, theta, phi, return_dirs, angle_overhead, angle_front)
     
     theta = np.deg2rad(theta)
     phi = np.deg2rad(phi)
@@ -271,8 +315,8 @@ def circle_poses(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_
     # print('3d phi: ', phi)
     
     
-    # poses = get_eg3d(device, radius, theta, phi, return_dirs, angle_overhead, angle_front)
-    return poses, dirs    
+    return poses_eg3d, dirs    
+    # return poses, dirs    
     
 
 class NeRFDataset:
@@ -314,8 +358,8 @@ class NeRFDataset:
                 poses, dirs = rand_poses(B, self.device, radius_range=self.opt.radius_range, theta_range=self.opt.theta_range, return_dirs=self.opt.dir_text, angle_overhead=self.opt.angle_overhead, angle_front=self.opt.angle_front, jitter=self.opt.jitter_pose, uniform_sphere_rate=self.opt.uniform_sphere_rate)
 
                 # random focal
-                fov = random.random() * (self.opt.fovy_range[1] - self.opt.fovy_range[0]) + self.opt.fovy_range[0]
-                fov_deg = 18.837
+                # fov = random.random() * (self.opt.fovy_range[1] - self.opt.fovy_range[0]) + self.opt.fovy_range[0]
+                fov = 18.837
             else:
                 # circle pose
                 phi = (index[0] / self.size) * 360
@@ -327,8 +371,8 @@ class NeRFDataset:
                 # print('theta: ', self.opt.val_theta)
                 # print()
                 # fixed focal
-                fov = (self.opt.fovy_range[1] + self.opt.fovy_range[0]) / 2
-                fov_deg = 18.837
+                # fov = (self.opt.fovy_range[1] + self.opt.fovy_range[0]) / 2
+                fov = 18.837
 
             focal = self.H / (2 * np.tan(np.deg2rad(fov) / 2))
             intrinsics = np.array([focal, focal, self.cx, self.cy])

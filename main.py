@@ -110,8 +110,8 @@ def make_c(opt):
         rendering_options.update({
             'depth_resolution': 48, # number of uniform samples to take per ray.
             'depth_resolution_importance': 48, # number of importance samples to take per ray.
-            'ray_start': 'auto', #'2.25', # near point along each ray to start taking samples.
-            'ray_end': 'auto', #3.3, # far point along each ray to stop taking samples. 
+            'ray_start': 2.25, #'2.25', # near point along each ray to start taking samples.
+            'ray_end': 3.3, #3.3, # far point along each ray to stop taking samples. 
             'box_warp': 1, # the side-length of the bounding box spanned by the tri-planes; box_warp=1 means [-0.5, -0.5, -0.5] -> [0.5, 0.5, 0.5].
             'avg_camera_radius': 2.7, # used only in the visualizer to specify camera orbit radius.
             'avg_camera_pivot': [0, 0, 0.2], # used only in the visualizer to control center of camera rotation.
@@ -254,7 +254,7 @@ if __name__ == '__main__':
     parser.add_argument('--dt_gamma', type=float, default=0, help="dt_gamma (>=0) for adaptive ray marching. set to 0 to disable, >0 to accelerate rendering (but usually with worse quality)")
     parser.add_argument('--min_near', type=float, default=0.1, help="minimum near distance for camera")
     parser.add_argument('--radius_range', type=float, nargs='*', default=[2.69, 2.71], help="training camera radius range")
-    parser.add_argument('--val_radius', type=float, default=1.8, help="valid camera radius")
+    parser.add_argument('--val_radius', type=float, default=3.0, help="valid camera radius")
     parser.add_argument('--fovy_range', type=float, nargs='*', default=[40, 70], help="training camera fovy range")
     parser.add_argument('--dir_text', action='store_true', default=True, help="direction-encode the text prompt, by appending front/side/back/overhead view")
     parser.add_argument('--suppress_face', action='store_true', help="also use negative dir text prompt.")
