@@ -178,8 +178,8 @@ class OSGDecoder(torch.nn.Module):
         
         d = (x ** 2).sum(-1)
         
-        blob_density = 10
-        blob_radius = 0.1
+        blob_density = 10 # 10
+        blob_radius = 0.4
         upper_clip_m = -100
         
         g = blob_density * (1 - torch.sqrt(d) / blob_radius)

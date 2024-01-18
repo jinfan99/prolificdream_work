@@ -126,15 +126,29 @@ def create_cam2world_matrix(forward_vector, origin):
 
     forward_vector = math_utils.normalize_vecs(forward_vector)
     up_vector = torch.tensor([0, 1, 0], dtype=torch.float, device=origin.device).expand_as(forward_vector)
-
-    right_vector = -math_utils.normalize_vecs(torch.cross(up_vector, forward_vector, dim=-1))
-    up_vector = math_utils.normalize_vecs(torch.cross(forward_vector, right_vector, dim=-1))
-
+    
+    if torch.cross(up_vector, forward_vector, dim=-1).any():
+        right_vector = -math_utils.normalize_vecs(torch.cross(up_vector, forward_vector, dim=-1))
+    else:
+        right_vector = torch.cross(up_vector, forward_vector, dim=-1)
+        
+    if torch.cross(forward_vector, right_vector, dim=-1).any():
+        up_vector = math_utils.normalize_vecs(torch.cross(forward_vector, right_vector, dim=-1))
+    else:
+        up_vector = torch.cross(forward_vector, right_vector, dim=-1)
+    
     rotation_matrix = torch.eye(4, device=origin.device).unsqueeze(0).repeat(forward_vector.shape[0], 1, 1)
     rotation_matrix[:, :3, :3] = torch.stack((right_vector, up_vector, forward_vector), axis=-1)
 
     translation_matrix = torch.eye(4, device=origin.device).unsqueeze(0).repeat(forward_vector.shape[0], 1, 1)
     translation_matrix[:, :3, 3] = origin
+    
+    # print('right_vector: ', right_vector)
+    # print('up_vector: ', up_vector)
+    # print('forward_vector: ', forward_vector)
+    
+    # print('rot: ', rotation_matrix)
+    # print('trans: ', translation_matrix)
     cam2world = (translation_matrix @ rotation_matrix)[:, :, :]
     assert(cam2world.shape[1:] == (4, 4))
     return cam2world

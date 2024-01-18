@@ -1412,7 +1412,7 @@ class Trainer(object):
             self.optimizer.zero_grad()
 
             with torch.cuda.amp.autocast(enabled=self.fp16):
-                pred_rgbs, pred_depths, loss, pseudo_loss, latents, shading = self.train_step(data)
+                pred_rgbs, pred_depths, loss, pseudo_loss, latents, shading = self.train_step_sds(data)
 
             # print('min: ', pred_rgbs.min())
             # print('max: ', pred_rgbs.max())

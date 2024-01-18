@@ -99,8 +99,8 @@ class ImportanceRenderer(torch.nn.Module):
             # print('invalid ray start: ', ray_start[~is_ray_valid])
             # print('invalid ray end: ', ray_end[~is_ray_valid])
             if torch.any(is_ray_valid).item():
-                ray_start[~is_ray_valid] = ray_end[is_ray_valid].max() + 2#ray_start[is_ray_valid].min() # ray_start[is_ray_valid].min()
-                ray_end[~is_ray_valid] = ray_end[is_ray_valid].max() + 2#ray_start[is_ray_valid].max()  # ray_start[is_ray_valid].max()
+                ray_start[~is_ray_valid] = ray_start[is_ray_valid].min()    #ray_start[is_ray_valid].min() # ray_start[is_ray_valid].min()
+                ray_end[~is_ray_valid] = ray_start[is_ray_valid].max()#ray_start[is_ray_valid].max()  # ray_start[is_ray_valid].max()
             depths_coarse = self.sample_stratified(ray_origins, ray_start, ray_end, rendering_options['depth_resolution'], rendering_options['disparity_space_sampling'])
         else:
             # Create stratified depth samples
@@ -108,8 +108,8 @@ class ImportanceRenderer(torch.nn.Module):
 
         batch_size, num_rays, samples_per_ray, _ = depths_coarse.shape
         
-        # print('valid depth: ', depths_coarse[:, is_ray_valid.squeeze()])
-        # print('invalid depth: ', depths_coarse[:, ~is_ray_valid.squeeze()])
+        print('valid depth: ', depths_coarse[:, is_ray_valid.squeeze()])
+        print('invalid depth: ', depths_coarse[:, ~is_ray_valid.squeeze()])
 
         # Coarse Pass
         sample_coordinates = (ray_origins.unsqueeze(-2) + depths_coarse * ray_directions.unsqueeze(-2)).reshape(batch_size, -1, 3)
@@ -147,11 +147,12 @@ class ImportanceRenderer(torch.nn.Module):
             rgb_final, depth_final, weights = self.ray_marcher(colors_coarse, densities_coarse, depths_coarse, rendering_options)
 
 
+        print('density: ', all_densities)
         # print('rgb final: ', rgb_final.shape)
         # print(is_ray_valid.shape)
         # print('weigth shape: ', weights.shape)
-        # print('valid weight: ', weights.sum(2).squeeze()[is_ray_valid.squeeze()])
-        # print('invalid weight: ', weights.sum(2).squeeze()[~is_ray_valid.squeeze()])
+        print('valid weight: ', weights.sum(2).squeeze()[is_ray_valid.squeeze()])
+        print('invalid weight: ', weights.sum(2).squeeze()[~is_ray_valid.squeeze()])
         return rgb_final, depth_final, weights.sum(2).squeeze(-1), weights.squeeze(-1)
 
     def run_model(self, planes, decoder, sample_coordinates, sample_directions, options):

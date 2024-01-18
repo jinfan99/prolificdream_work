@@ -163,7 +163,7 @@ def rand_poses(size, device, radius_range=[1, 1.5], theta_range=[0, 120], phi_ra
         # camera_origins[:, 2:3] = radius*torch.sin(phis) * torch.sin(thetas)
         camera_origins[:, 1:2] = radius*torch.cos(phis)
 
-        lookat_position = torch.tensor([0, 0, 0.2]).to(device)
+        lookat_position = torch.tensor([0, 0, 0.00001]).to(device)
         # forward_vectors = math_utils.normalize_vecs(-camera_origins)
         forward_vectors = math_utils.normalize_vecs(lookat_position - camera_origins)
         
@@ -264,9 +264,9 @@ def circle_poses(device, radius=1.25, theta=60, phi=0, return_dirs=False, angle_
         # camera_origins[:, 2:3] = radius*torch.sin(phis) * torch.sin(thetas)
         camera_origins[:, 1:2] = radius*torch.cos(phis)
 
-        lookat_position = torch.tensor([0, 0, 0.2]).to(device)
-        # forward_vectors = math_utils.normalize_vecs(-camera_origins)
-        forward_vectors = math_utils.normalize_vecs(lookat_position - camera_origins)
+        # lookat_position = torch.tensor([0, 0, 1e-6]).to(device)
+        forward_vectors = math_utils.normalize_vecs(-camera_origins)
+        # forward_vectors = math_utils.normalize_vecs(lookat_position - camera_origins)
         
         poses = create_cam2world_matrix(forward_vectors, camera_origins)
         
@@ -358,8 +358,8 @@ class NeRFDataset:
                 poses, dirs = rand_poses(B, self.device, radius_range=self.opt.radius_range, theta_range=self.opt.theta_range, return_dirs=self.opt.dir_text, angle_overhead=self.opt.angle_overhead, angle_front=self.opt.angle_front, jitter=self.opt.jitter_pose, uniform_sphere_rate=self.opt.uniform_sphere_rate)
 
                 # random focal
-                # fov = random.random() * (self.opt.fovy_range[1] - self.opt.fovy_range[0]) + self.opt.fovy_range[0]
-                fov = 18.837
+                fov = random.random() * (self.opt.fovy_range[1] - self.opt.fovy_range[0]) + self.opt.fovy_range[0]
+                # fov = 18.837
             else:
                 # circle pose
                 phi = (index[0] / self.size) * 360
@@ -371,8 +371,8 @@ class NeRFDataset:
                 # print('theta: ', self.opt.val_theta)
                 # print()
                 # fixed focal
-                # fov = (self.opt.fovy_range[1] + self.opt.fovy_range[0]) / 2
-                fov = 18.837
+                fov = (self.opt.fovy_range[1] + self.opt.fovy_range[0]) / 2
+                # fov = 18.837
 
             focal = self.H / (2 * np.tan(np.deg2rad(fov) / 2))
             intrinsics = np.array([focal, focal, self.cx, self.cy])
